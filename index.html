@@ -571,10 +571,7 @@
       const SUPABASE_URL = 'https://rcmlxanyyhhbgzysxkah.supabase.co';
       const SUPABASE_ANON_KEY =
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJjbWx4YW55eWhoYmd6eXN4a2FoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4ODcyNzMsImV4cCI6MjA5ODQ2MzI3M30.6aAG-KB2dABmEe-1B3lZ1d8acOhXz9aeZIIi68v039U';
-      const supabase = window.supabase.createClient(
-        SUPABASE_URL,
-        SUPABASE_ANON_KEY,
-      );
+      const sp = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
       /* =========================================================================== */
 
       const STORAGE_KEY = 'family-tree-data';
@@ -607,7 +604,7 @@
 
       async function loadTree() {
         try {
-          const { data, error } = await supabase
+          const { data, error } = await sp
             .from('kv_store')
             .select('value')
             .eq('key', STORAGE_KEY)
@@ -622,7 +619,7 @@
 
       async function saveTree() {
         try {
-          const { error } = await supabase.from('kv_store').upsert({
+          const { error } = await sp.from('kv_store').upsert({
             key: STORAGE_KEY,
             value: tree,
             updated_at: new Date().toISOString(),
