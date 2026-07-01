@@ -565,13 +565,47 @@
       </div>
     </div>
 
+    <div class="overlay" id="matchOverlay">
+      <div class="modal">
+        <div class="kicker">Possible match</div>
+        <h3 id="matchTitle">Is this the same person?</h3>
+        <p
+          id="matchBody"
+          style="
+            color: var(--ink-dim);
+            font-size: 13px;
+            line-height: 1.5;
+            margin: 0 0 18px;
+          "
+        ></p>
+        <div
+          id="matchOptions"
+          style="
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 8px;
+          "
+        ></div>
+        <button
+          class="btn ghost"
+          id="matchCancel"
+          style="width: 100%; margin-top: 8px"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
       /* ====== SUPABASE CONFIG — fill these in from Project Settings → API ====== */
-      const SUPABASE_URL = 'https://rcmlxanyyhhbgzysxkah.supabase.co';
-      const SUPABASE_ANON_KEY =
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJjbWx4YW55eWhoYmd6eXN4a2FoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4ODcyNzMsImV4cCI6MjA5ODQ2MzI3M30.6aAG-KB2dABmEe-1B3lZ1d8acOhXz9aeZIIi68v039U';
-      const sp = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      const SUPABASE_URL = 'YOUR_SUPABASE_URL';
+      const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+      const supa = window.supabase.createClient(
+        SUPABASE_URL,
+        SUPABASE_ANON_KEY,
+      );
       /* =========================================================================== */
 
       const STORAGE_KEY = 'family-tree-data';
@@ -594,6 +628,11 @@
         modalTitle: document.getElementById('modalTitle'),
         modalInput: document.getElementById('modalInput'),
         statusText: document.getElementById('statusText'),
+        matchOverlay: document.getElementById('matchOverlay'),
+        matchTitle: document.getElementById('matchTitle'),
+        matchBody: document.getElementById('matchBody'),
+        matchOptions: document.getElementById('matchOptions'),
+        matchCancel: document.getElementById('matchCancel'),
       };
 
       let currentId = null; // id of the person currently focused on stage
@@ -604,7 +643,7 @@
 
       async function loadTree() {
         try {
-          const { data, error } = await sp
+          const { data, error } = await supa
             .from('kv_store')
             .select('value')
             .eq('key', STORAGE_KEY)
@@ -619,7 +658,7 @@
 
       async function saveTree() {
         try {
-          const { error } = await sp.from('kv_store').upsert({
+          const { error } = await supa.from('kv_store').upsert({
             key: STORAGE_KEY,
             value: tree,
             updated_at: new Date().toISOString(),
@@ -886,6 +925,7 @@
 
       function closeModal() {
         els.overlay.classList.remove('open');
+        els.matchOverlay.classList.remove('open');
         modalOpen = false;
         pendingAction = null;
       }
@@ -914,22 +954,110 @@
             document.getElementById('pageTitle').textContent =
               name + ' Family Tree';
           }
-        } else {
-          const newId = newNode(name);
-          if (type === 'parent') {
-            tree.nodes[newId].children.push(nodeId);
-            tree.nodes[nodeId].parents.push(newId);
-          } else {
-            tree.nodes[newId].parents.push(nodeId);
-            tree.nodes[nodeId].children.push(newId);
-          }
+          closeModal();
+          render();
+          setStatus('saving…');
+          await saveTree();
+          return;
         }
 
+        // check for existing people with the same name elsewhere in the tree,
+        // excluding the current node itself and anyone already directly linked to it
+        const already = new Set([
+          nodeId,
+          ...tree.nodes[nodeId].parents,
+          ...tree.nodes[nodeId].children,
+        ]);
+        const matches = Object.values(tree.nodes).filter(
+          (n) =>
+            n.name.trim().toLowerCase() === name.toLowerCase() &&
+            !already.has(n.id),
+        );
+
+        if (matches.length > 0) {
+          showMatchModal(nodeId, type, name, matches);
+        } else {
+          await finalizeNewPerson(nodeId, type, name);
+        }
+      }
+
+      async function finalizeNewPerson(nodeId, type, name) {
+        const newId = newNode(name);
+        if (type === 'parent') {
+          tree.nodes[newId].children.push(nodeId);
+          tree.nodes[nodeId].parents.push(newId);
+        } else {
+          tree.nodes[newId].parents.push(nodeId);
+          tree.nodes[nodeId].children.push(newId);
+        }
         closeModal();
         render();
         setStatus('saving…');
         await saveTree();
       }
+
+      async function linkExistingPerson(nodeId, type, existingId) {
+        if (type === 'parent') {
+          if (!tree.nodes[nodeId].parents.includes(existingId))
+            tree.nodes[nodeId].parents.push(existingId);
+          if (!tree.nodes[existingId].children.includes(nodeId))
+            tree.nodes[existingId].children.push(nodeId);
+        } else {
+          if (!tree.nodes[nodeId].children.includes(existingId))
+            tree.nodes[nodeId].children.push(existingId);
+          if (!tree.nodes[existingId].parents.includes(nodeId))
+            tree.nodes[existingId].parents.push(nodeId);
+        }
+        closeModal();
+        render();
+        setStatus('saving…');
+        await saveTree();
+      }
+
+      /* ---------------- match confirmation modal ---------------- */
+      function showMatchModal(nodeId, type, name, matches) {
+        const personName = tree.nodes[nodeId].name;
+        const relWord = type === 'parent' ? 'parent' : 'child';
+        els.matchTitle.textContent = `Found an existing "${name}"`;
+        els.matchBody.textContent =
+          matches.length === 1
+            ? `There's already a "${name}" in the tree. Is that the same person as this new ${relWord} of ${personName}?`
+            : `There are ${matches.length} people named "${name}" in the tree. Is one of them the same person as this new ${relWord} of ${personName}?`;
+
+        els.matchOptions.innerHTML = '';
+        matches.forEach((m) => {
+          const btn = document.createElement('button');
+          btn.className = 'btn ghost';
+          btn.style.width = '100%';
+          btn.textContent = `Yes, same person as "${m.name}"`;
+          btn.addEventListener('click', () =>
+            linkExistingPerson(nodeId, type, m.id),
+          );
+          els.matchOptions.appendChild(btn);
+        });
+        const newBtn = document.createElement('button');
+        newBtn.className = 'btn';
+        newBtn.style.width = '100%';
+        newBtn.textContent = 'No, this is a different person';
+        newBtn.addEventListener('click', () =>
+          finalizeNewPerson(nodeId, type, name),
+        );
+        els.matchOptions.appendChild(newBtn);
+
+        els.overlay.classList.remove('open');
+        els.matchOverlay.classList.add('open');
+      }
+
+      els.matchCancel.addEventListener('click', () => {
+        els.matchOverlay.classList.remove('open');
+        closeModal();
+      });
+      els.matchOverlay.addEventListener('click', (e) => {
+        if (e.target === els.matchOverlay) {
+          els.matchOverlay.classList.remove('open');
+          closeModal();
+        }
+      });
 
       init();
     </script>
