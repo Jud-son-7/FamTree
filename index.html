@@ -17,7 +17,7 @@
         --brass: #c9a24b;
         --brass-soft: #8c7638;
         --line: rgba(201, 162, 75, 0.5);
-        --danger: #b8654f;
+        --danger: #d97b64;
         --radius: 10px;
       }
       * {
@@ -287,6 +287,12 @@
         line-height: 1.25;
         word-break: break-word;
       }
+      .card .dob {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 10.5px;
+        color: var(--ink-dim);
+        margin-top: 4px;
+      }
       .card .root-tag {
         font-family: 'IBM Plex Mono', monospace;
         font-size: 9px;
@@ -316,20 +322,26 @@
         border-color: var(--brass);
       }
       .mini.edit {
-        display: block;
-        width: 100%;
-        margin-top: 6px;
+        display: inline-block;
+        width: auto;
+        margin-top: 8px;
         background: transparent;
         border: none;
         color: var(--ink-dim);
         text-decoration: underline;
         text-underline-offset: 2px;
         font-size: 10px;
-        padding: 2px 0 0;
+        padding: 2px 6px;
       }
       .mini.edit:hover {
         color: var(--brass);
         border-color: transparent;
+      }
+      .focus-links {
+        display: flex;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 2px;
       }
 
       /* focus card sits larger than child cards */
@@ -340,6 +352,9 @@
       }
       .card.focus .name {
         font-size: 21px;
+      }
+      .card.focus .dob {
+        font-size: 11.5px;
       }
 
       .children-section {
@@ -454,6 +469,11 @@
         margin: 0 0 16px;
         font-weight: 600;
       }
+      .modal p.hint {
+        color: var(--ink-dim);
+        font-size: 12.5px;
+        margin: -10px 0 16px;
+      }
       .modal input {
         width: 100%;
         padding: 11px 12px;
@@ -464,9 +484,22 @@
         font-size: 15px;
         outline: none;
         margin-bottom: 16px;
+        font-family: 'Inter', sans-serif;
+        color-scheme: dark;
       }
       .modal input:focus {
         border-color: var(--brass);
+      }
+      .modal .error-msg {
+        display: none;
+        text-align: left;
+        color: var(--danger);
+        font-size: 12.5px;
+        line-height: 1.4;
+        margin: -10px 0 14px;
+      }
+      .modal .error-msg.show {
+        display: block;
       }
       .modal .row {
         display: flex;
@@ -474,6 +507,19 @@
       }
       .modal .row button {
         flex: 1;
+      }
+      .modal .clear-link {
+        display: inline-block;
+        margin-top: 14px;
+        background: none;
+        border: none;
+        color: var(--ink-dim);
+        font-size: 11.5px;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .modal .clear-link:hover {
+        color: var(--danger);
       }
 
       @media (max-width: 520px) {
@@ -548,6 +594,7 @@
 
     <footer>Shared registry &middot; changes save automatically</footer>
 
+    <!-- name add/edit modal -->
     <div class="overlay" id="overlay">
       <div class="modal">
         <div class="kicker" id="modalKicker">Add relative</div>
@@ -565,6 +612,7 @@
       </div>
     </div>
 
+    <!-- duplicate-person match modal -->
     <div class="overlay" id="matchOverlay">
       <div class="modal">
         <div class="kicker">Possible match</div>
@@ -597,6 +645,22 @@
       </div>
     </div>
 
+    <!-- birth date modal -->
+    <div class="overlay" id="dobOverlay">
+      <div class="modal">
+        <div class="kicker">Birth date</div>
+        <h3 id="dobTitle">Add a birth date</h3>
+        <p class="hint">Optional — leave blank if unknown.</p>
+        <input id="dobInput" type="date" />
+        <p class="error-msg" id="dobError">Please enter a valid date.</p>
+        <div class="row">
+          <button class="btn ghost" id="dobCancel">Cancel</button>
+          <button class="btn" id="dobConfirm">Save</button>
+        </div>
+        <button class="clear-link" id="dobClear">Clear birth date</button>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
       /* ====== SUPABASE CONFIG — fill these in from Project Settings → API ====== */
@@ -610,9 +674,10 @@
       /* =========================================================================== */
 
       const STORAGE_KEY = 'family-tree-data';
-      let tree = null; // { nodes: {id: {id,name,parents:[],children:[]}}, rootId, nextId }
+      let tree = null; // { nodes: {id: {id,name,dob,parents:[],children:[]}}, rootId, nextId }
       let lastHash = null;
-      let pendingAction = null; // { nodeId, type: 'parent'|'child' }
+      let pendingAction = null; // { nodeId, type: 'parent'|'child'|'edit' }
+      let pendingDobNode = null;
       let pollTimer = null;
       let modalOpen = false;
 
@@ -634,6 +699,13 @@
         matchBody: document.getElementById('matchBody'),
         matchOptions: document.getElementById('matchOptions'),
         matchCancel: document.getElementById('matchCancel'),
+        dobOverlay: document.getElementById('dobOverlay'),
+        dobTitle: document.getElementById('dobTitle'),
+        dobInput: document.getElementById('dobInput'),
+        dobError: document.getElementById('dobError'),
+        dobConfirm: document.getElementById('dobConfirm'),
+        dobCancel: document.getElementById('dobCancel'),
+        dobClear: document.getElementById('dobClear'),
       };
 
       let currentId = null; // id of the person currently focused on stage
@@ -679,7 +751,7 @@
 
       function newNode(name) {
         const id = 'p' + tree.nextId++;
-        tree.nodes[id] = { id, name, parents: [], children: [] };
+        tree.nodes[id] = { id, name, dob: null, parents: [], children: [] };
         return id;
       }
 
@@ -778,6 +850,78 @@
         return [targetId]; // fallback, shouldn't normally happen
       }
 
+      /* ---------------- date helpers ---------------- */
+      function formatDob(dob) {
+        if (!dob) return '';
+        const d = new Date(dob + 'T00:00:00');
+        return d.toLocaleDateString(undefined, {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        });
+      }
+
+      function formatDobYear(dob) {
+        if (!dob) return '';
+        return dob.slice(0, 4);
+      }
+
+      // all ancestors (parents, grandparents, ...) of a node, not including itself
+      function getAllAncestors(id) {
+        const visited = new Set();
+        const queue = [...(tree.nodes[id]?.parents || [])];
+        while (queue.length) {
+          const pid = queue.shift();
+          if (visited.has(pid) || !tree.nodes[pid]) continue;
+          visited.add(pid);
+          queue.push(...tree.nodes[pid].parents);
+        }
+        return [...visited].map((i) => tree.nodes[i]);
+      }
+
+      // all descendants (children, grandchildren, ...) of a node, not including itself
+      function getAllDescendants(id) {
+        const visited = new Set();
+        const queue = [...(tree.nodes[id]?.children || [])];
+        while (queue.length) {
+          const cid = queue.shift();
+          if (visited.has(cid) || !tree.nodes[cid]) continue;
+          visited.add(cid);
+          queue.push(...tree.nodes[cid].children);
+        }
+        return [...visited].map((i) => tree.nodes[i]);
+      }
+
+      // returns { valid: true } or { valid: false, message: '...' }
+      function validateDob(nodeId, dobStr) {
+        if (!dobStr) return { valid: true }; // clearing / leaving blank is always fine
+        const candidate = new Date(dobStr + 'T00:00:00');
+
+        const ancestors = getAllAncestors(nodeId).filter((a) => a.dob);
+        for (const a of ancestors) {
+          const aDate = new Date(a.dob + 'T00:00:00');
+          if (candidate <= aDate) {
+            return {
+              valid: false,
+              message: `Please enter a valid date — it must be after ${a.name}'s birth date (${formatDob(a.dob)}), since ${a.name} is an ancestor.`,
+            };
+          }
+        }
+
+        const descendants = getAllDescendants(nodeId).filter((d) => d.dob);
+        for (const d of descendants) {
+          const dDate = new Date(d.dob + 'T00:00:00');
+          if (candidate >= dDate) {
+            return {
+              valid: false,
+              message: `Please enter a valid date — it must be before ${d.name}'s birth date (${formatDob(d.dob)}), since ${d.name} is a descendant.`,
+            };
+          }
+        }
+
+        return { valid: true };
+      }
+
       /* ---------------- render ---------------- */
       function render() {
         const node = tree.nodes[currentId];
@@ -838,6 +982,13 @@
         name.textContent = node.name;
         card.appendChild(name);
 
+        if (node.dob) {
+          const dob = document.createElement('div');
+          dob.className = 'dob';
+          dob.textContent = 'b. ' + formatDob(node.dob);
+          card.appendChild(dob);
+        }
+
         if (id === tree.rootId) {
           const tag = document.createElement('span');
           tag.className = 'root-tag';
@@ -845,11 +996,22 @@
           card.appendChild(tag);
         }
 
+        const links = document.createElement('div');
+        links.className = 'focus-links';
+
         const edit = document.createElement('button');
         edit.className = 'mini edit';
         edit.textContent = 'Edit name';
         edit.addEventListener('click', () => openModal(id, 'edit'));
-        card.appendChild(edit);
+        links.appendChild(edit);
+
+        const dobBtn = document.createElement('button');
+        dobBtn.className = 'mini edit';
+        dobBtn.textContent = node.dob ? 'Edit birth date' : 'Add birth date';
+        dobBtn.addEventListener('click', () => openDobModal(id));
+        links.appendChild(dobBtn);
+
+        card.appendChild(links);
 
         return card;
       }
@@ -876,6 +1038,13 @@
           name.textContent = child.name;
           card.appendChild(name);
 
+          if (child.dob) {
+            const dob = document.createElement('div');
+            dob.className = 'dob';
+            dob.textContent = 'b. ' + formatDobYear(child.dob);
+            card.appendChild(dob);
+          }
+
           if (child.children.length > 0) {
             const more = document.createElement('span');
             more.className = 'see-more';
@@ -897,7 +1066,7 @@
         els.childrenGrid.appendChild(addTile);
       }
 
-      /* ---------------- modal ---------------- */
+      /* ---------------- name modal ---------------- */
       function openModal(nodeId, type) {
         pendingAction = { nodeId, type };
         modalOpen = true;
@@ -1058,6 +1227,57 @@
           els.matchOverlay.classList.remove('open');
           closeModal();
         }
+      });
+
+      /* ---------------- birth date modal ---------------- */
+      function openDobModal(nodeId) {
+        pendingDobNode = nodeId;
+        modalOpen = true;
+        const node = tree.nodes[nodeId];
+        els.dobTitle.textContent = node.dob
+          ? `Edit ${node.name}'s birth date`
+          : `Add ${node.name}'s birth date`;
+        els.dobInput.value = node.dob || '';
+        els.dobError.classList.remove('show');
+        els.dobOverlay.classList.add('open');
+        setTimeout(() => els.dobInput.focus(), 50);
+      }
+
+      function closeDobModal() {
+        els.dobOverlay.classList.remove('open');
+        els.dobError.classList.remove('show');
+        modalOpen = false;
+        pendingDobNode = null;
+      }
+
+      els.dobCancel.addEventListener('click', closeDobModal);
+      els.dobOverlay.addEventListener('click', (e) => {
+        if (e.target === els.dobOverlay) closeDobModal();
+      });
+
+      els.dobConfirm.addEventListener('click', async () => {
+        if (!pendingDobNode) return;
+        const value = els.dobInput.value; // '' if cleared, else 'YYYY-MM-DD'
+        const result = validateDob(pendingDobNode, value);
+        if (!result.valid) {
+          els.dobError.textContent = result.message;
+          els.dobError.classList.add('show');
+          return;
+        }
+        tree.nodes[pendingDobNode].dob = value || null;
+        closeDobModal();
+        render();
+        setStatus('saving…');
+        await saveTree();
+      });
+
+      els.dobClear.addEventListener('click', async () => {
+        if (!pendingDobNode) return;
+        tree.nodes[pendingDobNode].dob = null;
+        closeDobModal();
+        render();
+        setStatus('saving…');
+        await saveTree();
       });
 
       init();
