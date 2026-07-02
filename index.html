@@ -661,6 +661,28 @@
       </div>
     </div>
 
+    <!-- shared-children sync modal -->
+    <div class="overlay" id="syncOverlay">
+      <div class="modal">
+        <div class="kicker">Shared child found</div>
+        <h3 id="syncTitle">Two parents share a child</h3>
+        <p
+          id="syncBody"
+          style="
+            color: var(--ink-dim);
+            font-size: 13px;
+            line-height: 1.6;
+            margin: 0 0 20px;
+            text-align: left;
+          "
+        ></p>
+        <div class="row">
+          <button class="btn ghost" id="syncNo">No, keep separate</button>
+          <button class="btn" id="syncYes">Yes, merge children</button>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
       /* ====== SUPABASE CONFIG — fill these in from Project Settings → API ====== */
@@ -678,6 +700,7 @@
       let lastHash = null;
       let pendingAction = null; // { nodeId, type: 'parent'|'child'|'edit' }
       let pendingDobNode = null;
+      let syncQueue = [];
       let pollTimer = null;
       let modalOpen = false;
 
@@ -706,6 +729,11 @@
         dobConfirm: document.getElementById('dobConfirm'),
         dobCancel: document.getElementById('dobCancel'),
         dobClear: document.getElementById('dobClear'),
+        syncOverlay: document.getElementById('syncOverlay'),
+        syncTitle: document.getElementById('syncTitle'),
+        syncBody: document.getElementById('syncBody'),
+        syncYes: document.getElementById('syncYes'),
+        syncNo: document.getElementById('syncNo'),
       };
 
       let currentId = null; // id of the person currently focused on stage
@@ -891,6 +919,110 @@
         }
         return [...visited].map((i) => tree.nodes[i]);
       }
+
+      /* ---------------- shared-child co-parent sync ---------------- */
+      function listNames(nodes, max = 4) {
+        const names = nodes.map((n) => n.name);
+        if (names.length <= max) return names.join(', ');
+        return names.slice(0, max).join(', ') + ` +${names.length - max} more`;
+      }
+
+      // links parentId as a parent of childId, unless doing so would create a cycle
+      function linkParentChildSafe(parentId, childId) {
+        if (!tree.nodes[parentId] || !tree.nodes[childId]) return;
+        if (parentId === childId) return;
+        const descendantsOfChild = new Set(
+          getAllDescendants(childId).map((n) => n.id),
+        );
+        if (descendantsOfChild.has(parentId)) return; // would create a cycle
+        if (!tree.nodes[parentId].children.includes(childId))
+          tree.nodes[parentId].children.push(childId);
+        if (!tree.nodes[childId].parents.includes(parentId))
+          tree.nodes[childId].parents.push(parentId);
+      }
+
+      // when parentId and some other parent(s) both end up as parents of childId,
+      // queue a prompt offering to merge each pair's full children lists together
+      function queueCoParentSync(parentId, childId) {
+        const others = (tree.nodes[childId]?.parents || []).filter(
+          (id) => id !== parentId && tree.nodes[id],
+        );
+        others.forEach((op) => {
+          const aChildren = new Set(tree.nodes[parentId].children);
+          const bChildren = new Set(tree.nodes[op].children);
+          const missingInB = [...aChildren]
+            .filter((c) => !bChildren.has(c))
+            .map((id) => tree.nodes[id])
+            .filter(Boolean);
+          const missingInA = [...bChildren]
+            .filter((c) => !aChildren.has(c))
+            .map((id) => tree.nodes[id])
+            .filter(Boolean);
+          if (missingInB.length || missingInA.length) {
+            syncQueue.push({
+              parentId,
+              op,
+              missingInB,
+              missingInA,
+              childId,
+            });
+          }
+        });
+      }
+
+      function startSyncQueueIfNeeded() {
+        if (syncQueue.length === 0) return;
+        modalOpen = true;
+        showSyncModal(syncQueue[0]);
+      }
+
+      function showSyncModal(item) {
+        const pA = tree.nodes[item.parentId];
+        const pOp = tree.nodes[item.op];
+        const child = tree.nodes[item.childId];
+        if (!pA || !pOp || !child) {
+          syncQueue.shift();
+          startSyncQueueIfNeeded();
+          return;
+        }
+        els.syncTitle.textContent = `${pA.name} and ${pOp.name} share a child`;
+
+        const lines = [`Both are now listed as parents of ${child.name}.`];
+        if (item.missingInB.length) {
+          lines.push(
+            `${pA.name} also has: ${listNames(item.missingInB)}. Add ${item.missingInB.length === 1 ? 'them' : 'these'} as ${pOp.name}'s child${item.missingInB.length === 1 ? '' : 'ren'} too?`,
+          );
+        }
+        if (item.missingInA.length) {
+          lines.push(
+            `${pOp.name} also has: ${listNames(item.missingInA)}. Add ${item.missingInA.length === 1 ? 'them' : 'these'} as ${pA.name}'s child${item.missingInA.length === 1 ? '' : 'ren'} too?`,
+          );
+        }
+        els.syncBody.textContent = lines.join(' ');
+        els.syncOverlay.classList.add('open');
+      }
+
+      async function resolveSyncPrompt(accept) {
+        const item = syncQueue.shift();
+        els.syncOverlay.classList.remove('open');
+        if (accept && item) {
+          item.missingInB.forEach((c) => linkParentChildSafe(item.op, c.id));
+          item.missingInA.forEach((c) =>
+            linkParentChildSafe(item.parentId, c.id),
+          );
+          render();
+          setStatus('saving…');
+          await saveTree();
+        }
+        if (syncQueue.length > 0) {
+          showSyncModal(syncQueue[0]);
+        } else {
+          modalOpen = false;
+        }
+      }
+
+      els.syncYes.addEventListener('click', () => resolveSyncPrompt(true));
+      els.syncNo.addEventListener('click', () => resolveSyncPrompt(false));
 
       // returns { valid: true } or { valid: false, message: '...' }
       function validateDob(nodeId, dobStr) {
@@ -1164,24 +1296,35 @@
         render();
         setStatus('saving…');
         await saveTree();
+        if (type === 'parent') {
+          queueCoParentSync(newId, nodeId);
+          startSyncQueueIfNeeded();
+        }
       }
 
       async function linkExistingPerson(nodeId, type, existingId) {
+        let parentId, childId;
         if (type === 'parent') {
           if (!tree.nodes[nodeId].parents.includes(existingId))
             tree.nodes[nodeId].parents.push(existingId);
           if (!tree.nodes[existingId].children.includes(nodeId))
             tree.nodes[existingId].children.push(nodeId);
+          parentId = existingId;
+          childId = nodeId;
         } else {
           if (!tree.nodes[nodeId].children.includes(existingId))
             tree.nodes[nodeId].children.push(existingId);
           if (!tree.nodes[existingId].parents.includes(nodeId))
             tree.nodes[existingId].parents.push(nodeId);
+          parentId = nodeId;
+          childId = existingId;
         }
         closeModal();
         render();
         setStatus('saving…');
         await saveTree();
+        queueCoParentSync(parentId, childId);
+        startSyncQueueIfNeeded();
       }
 
       /* ---------------- match confirmation modal ---------------- */
