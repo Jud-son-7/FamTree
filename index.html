@@ -578,7 +578,12 @@
         <div class="status">
           <span class="dot"></span><span id="statusText">synced</span>
         </div>
-        <button class="btn ghost small" id="refreshBtn">Refresh</button>
+        <div style="display: flex; gap: 8px">
+          <button class="btn ghost small" id="checkSharedBtn">
+            Check for shared children
+          </button>
+          <button class="btn ghost small" id="refreshBtn">Refresh</button>
+        </div>
       </div>
       <div id="stage">
         <div class="breadcrumb" id="breadcrumb"></div>
@@ -927,6 +932,21 @@
         return names.slice(0, max).join(', ') + ` +${names.length - max} more`;
       }
 
+      // returns { missingInB, missingInA } — node objects each parent has that the other doesn't
+      function computeChildDiff(parentId, op) {
+        const aChildren = new Set(tree.nodes[parentId].children);
+        const bChildren = new Set(tree.nodes[op].children);
+        const missingInB = [...aChildren]
+          .filter((c) => !bChildren.has(c))
+          .map((id) => tree.nodes[id])
+          .filter(Boolean);
+        const missingInA = [...bChildren]
+          .filter((c) => !aChildren.has(c))
+          .map((id) => tree.nodes[id])
+          .filter(Boolean);
+        return { missingInB, missingInA };
+      }
+
       // links parentId as a parent of childId, unless doing so would create a cycle
       function linkParentChildSafe(parentId, childId) {
         if (!tree.nodes[parentId] || !tree.nodes[childId]) return;
@@ -948,16 +968,7 @@
           (id) => id !== parentId && tree.nodes[id],
         );
         others.forEach((op) => {
-          const aChildren = new Set(tree.nodes[parentId].children);
-          const bChildren = new Set(tree.nodes[op].children);
-          const missingInB = [...aChildren]
-            .filter((c) => !bChildren.has(c))
-            .map((id) => tree.nodes[id])
-            .filter(Boolean);
-          const missingInA = [...bChildren]
-            .filter((c) => !aChildren.has(c))
-            .map((id) => tree.nodes[id])
-            .filter(Boolean);
+          const { missingInB, missingInA } = computeChildDiff(parentId, op);
           if (missingInB.length || missingInA.length) {
             syncQueue.push({
               parentId,
@@ -968,6 +979,41 @@
             });
           }
         });
+      }
+
+      // scans the whole current tree for any pair of parents who share at
+      // least one child but have mismatched children lists, and queues a
+      // merge prompt for each such pair. Used both for a manual "check now"
+      // action and to sweep up any mismatches already sitting in the data.
+      function scanAllCoParentPairs() {
+        const pairsSeen = new Set();
+        let found = 0;
+        Object.keys(tree.nodes).forEach((childId) => {
+          const parents = tree.nodes[childId].parents;
+          if (parents.length < 2) return;
+          for (let i = 0; i < parents.length; i++) {
+            for (let j = i + 1; j < parents.length; j++) {
+              const p1 = parents[i];
+              const p2 = parents[j];
+              if (!tree.nodes[p1] || !tree.nodes[p2]) continue;
+              const key = [p1, p2].sort().join('|');
+              if (pairsSeen.has(key)) continue;
+              pairsSeen.add(key);
+              const { missingInB, missingInA } = computeChildDiff(p1, p2);
+              if (missingInB.length || missingInA.length) {
+                found++;
+                syncQueue.push({
+                  parentId: p1,
+                  op: p2,
+                  missingInB,
+                  missingInA,
+                  childId,
+                });
+              }
+            }
+          }
+        });
+        return found;
       }
 
       function startSyncQueueIfNeeded() {
@@ -987,7 +1033,7 @@
         }
         els.syncTitle.textContent = `${pA.name} and ${pOp.name} share a child`;
 
-        const lines = [`Both are now listed as parents of ${child.name}.`];
+        const lines = [`Both are listed as parents of ${child.name}.`];
         if (item.missingInB.length) {
           lines.push(
             `${pA.name} also has: ${listNames(item.missingInB)}. Add ${item.missingInB.length === 1 ? 'them' : 'these'} as ${pOp.name}'s child${item.missingInB.length === 1 ? '' : 'ren'} too?`,
@@ -1018,11 +1064,24 @@
           showSyncModal(syncQueue[0]);
         } else {
           modalOpen = false;
+          setStatus('synced');
         }
       }
 
       els.syncYes.addEventListener('click', () => resolveSyncPrompt(true));
       els.syncNo.addEventListener('click', () => resolveSyncPrompt(false));
+
+      document
+        .getElementById('checkSharedBtn')
+        .addEventListener('click', () => {
+          const found = scanAllCoParentPairs();
+          if (found === 0) {
+            setStatus('no shared-child mismatches found');
+            setTimeout(() => setStatus('synced'), 2500);
+          } else {
+            startSyncQueueIfNeeded();
+          }
+        });
 
       // returns { valid: true } or { valid: false, message: '...' }
       function validateDob(nodeId, dobStr) {
