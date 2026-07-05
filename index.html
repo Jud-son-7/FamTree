@@ -186,6 +186,11 @@
         padding: 18px 20px 110px;
       }
 
+      #backBtn {
+        display: none;
+        margin: 0 auto 16px;
+      }
+
       .breadcrumb {
         display: flex;
         flex-wrap: wrap;
@@ -622,6 +627,7 @@
         <button class="btn ghost small" id="refreshBtn">Refresh</button>
       </div>
       <div id="stage">
+        <button class="btn ghost small" id="backBtn">← Back</button>
         <div class="breadcrumb" id="breadcrumb"></div>
         <div class="up-row" id="upRow"></div>
         <div class="focus-wrap" id="focusWrap"></div>
@@ -764,6 +770,7 @@
       let pendingDobNode = null;
       let pendingDeleteId = null;
       let syncQueue = [];
+      let navHistory = []; // stack of previously visited node ids, for the Back button
       let pollTimer = null;
       let modalOpen = false;
 
@@ -775,6 +782,7 @@
         focusWrap: document.getElementById('focusWrap'),
         childrenHeader: document.getElementById('childrenHeader'),
         childrenGrid: document.getElementById('childrenGrid'),
+        backBtn: document.getElementById('backBtn'),
         overlay: document.getElementById('overlay'),
         modalKicker: document.getElementById('modalKicker'),
         modalTitle: document.getElementById('modalTitle'),
@@ -907,6 +915,7 @@
         document.getElementById('pageTitle').textContent =
           'Dambudzo Family Tree';
         if (!currentId || !tree.nodes[currentId]) currentId = tree.rootId;
+        navHistory = [];
         render();
       }
 
@@ -926,9 +935,28 @@
       /* ---------------- navigation ---------------- */
       function navigate(id) {
         if (!tree.nodes[id]) return;
+        if (currentId && currentId !== id) navHistory.push(currentId);
         currentId = id;
         render();
         window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+
+      function goBack() {
+        while (navHistory.length) {
+          const prev = navHistory.pop();
+          if (tree.nodes[prev]) {
+            currentId = prev;
+            render();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            return;
+          }
+        }
+      }
+
+      els.backBtn.addEventListener('click', goBack);
+
+      function updateBackButton() {
+        els.backBtn.style.display = navHistory.length > 0 ? 'block' : 'none';
       }
 
       // shortest path from root to target, walking parent/child edges in either direction
@@ -1141,6 +1169,7 @@
         const node = tree.nodes[currentId];
         if (!node) return;
 
+        updateBackButton();
         renderBreadcrumb();
         renderUpRow(node);
         els.focusWrap.innerHTML = '';
@@ -1538,6 +1567,7 @@
         });
         delete tree.nodes[nodeId];
         if (currentId === nodeId) currentId = tree.rootId;
+        navHistory = navHistory.filter((id) => id !== nodeId);
       }
 
       // deletes nodeId and cascades down: a child is only deleted along
