@@ -140,6 +140,13 @@
         padding: 8px 12px;
         font-size: 12px;
       }
+      .btn.danger {
+        background: var(--danger);
+        color: #2a1410;
+      }
+      .btn.danger:hover {
+        background: #e6907a;
+      }
 
       /* ---------- stage / focused view ---------- */
       #wrap {
@@ -398,6 +405,31 @@
         content: ' ↓';
       }
 
+      .delete-btn {
+        position: absolute;
+        top: -8px;
+        right: -8px;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: var(--surface-2);
+        border: 1px solid rgba(201, 162, 75, 0.4);
+        color: var(--ink-dim);
+        font-size: 13px;
+        line-height: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        z-index: 5;
+        padding: 0;
+      }
+      .delete-btn:hover {
+        background: var(--danger);
+        border-color: var(--danger);
+        color: #2a1410;
+      }
+
       .add-tile {
         width: 150px;
         min-height: 78px;
@@ -474,7 +506,8 @@
         font-size: 12.5px;
         margin: -10px 0 16px;
       }
-      .modal input {
+      .modal input,
+      .modal select {
         width: 100%;
         padding: 11px 12px;
         background: var(--bg);
@@ -487,7 +520,8 @@
         font-family: 'Inter', sans-serif;
         color-scheme: dark;
       }
-      .modal input:focus {
+      .modal input:focus,
+      .modal select:focus {
         border-color: var(--brass);
       }
       .modal .error-msg {
@@ -520,6 +554,13 @@
       }
       .modal .clear-link:hover {
         color: var(--danger);
+      }
+      .modal p.body-text {
+        color: var(--ink-dim);
+        font-size: 13px;
+        line-height: 1.55;
+        margin: 0 0 18px;
+        text-align: left;
       }
 
       @media (max-width: 520px) {
@@ -617,15 +658,7 @@
       <div class="modal">
         <div class="kicker">Possible match</div>
         <h3 id="matchTitle">Is this the same person?</h3>
-        <p
-          id="matchBody"
-          style="
-            color: var(--ink-dim);
-            font-size: 13px;
-            line-height: 1.5;
-            margin: 0 0 18px;
-          "
-        ></p>
+        <p id="matchBody" class="body-text"></p>
         <div
           id="matchOptions"
           style="
@@ -666,20 +699,49 @@
       <div class="modal">
         <div class="kicker">Shared child found</div>
         <h3 id="syncTitle">Two parents share a child</h3>
-        <p
-          id="syncBody"
-          style="
-            color: var(--ink-dim);
-            font-size: 13px;
-            line-height: 1.6;
-            margin: 0 0 20px;
-            text-align: left;
-          "
-        ></p>
+        <p id="syncBody" class="body-text"></p>
         <div class="row">
           <button class="btn ghost" id="syncNo">No, keep separate</button>
           <button class="btn" id="syncYes">Yes, merge children</button>
         </div>
+      </div>
+    </div>
+
+    <!-- delete confirmation modal -->
+    <div class="overlay" id="deleteOverlay">
+      <div class="modal">
+        <div class="kicker">Remove person</div>
+        <h3 id="deleteTitle">Delete this person?</h3>
+        <p id="deleteBody" class="body-text" style="text-align: center"></p>
+        <div class="row">
+          <button class="btn ghost" id="deleteCancel">Cancel</button>
+          <button class="btn danger" id="deleteConfirmBtn">Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- inheritance modal (shown when the person being deleted has children) -->
+    <div class="overlay" id="inheritOverlay">
+      <div class="modal">
+        <div class="kicker">Has children</div>
+        <h3 id="inheritTitle">What happens to their children?</h3>
+        <p id="inheritBody" class="body-text"></p>
+        <select id="inheritSelect">
+          <option value="">— Choose someone to inherit them —</option>
+        </select>
+        <div class="row" style="margin-bottom: 12px">
+          <button class="btn ghost" id="inheritCancel">Cancel</button>
+          <button class="btn" id="inheritReassignBtn" disabled>
+            Reassign &amp; delete
+          </button>
+        </div>
+        <button
+          class="clear-link"
+          id="inheritDeleteAllBtn"
+          style="color: var(--danger)"
+        >
+          Delete all their children too
+        </button>
       </div>
     </div>
 
@@ -700,6 +762,7 @@
       let lastHash = null;
       let pendingAction = null; // { nodeId, type: 'parent'|'child'|'edit' }
       let pendingDobNode = null;
+      let pendingDeleteId = null;
       let syncQueue = [];
       let pollTimer = null;
       let modalOpen = false;
@@ -734,6 +797,18 @@
         syncBody: document.getElementById('syncBody'),
         syncYes: document.getElementById('syncYes'),
         syncNo: document.getElementById('syncNo'),
+        deleteOverlay: document.getElementById('deleteOverlay'),
+        deleteTitle: document.getElementById('deleteTitle'),
+        deleteBody: document.getElementById('deleteBody'),
+        deleteCancel: document.getElementById('deleteCancel'),
+        deleteConfirmBtn: document.getElementById('deleteConfirmBtn'),
+        inheritOverlay: document.getElementById('inheritOverlay'),
+        inheritTitle: document.getElementById('inheritTitle'),
+        inheritBody: document.getElementById('inheritBody'),
+        inheritSelect: document.getElementById('inheritSelect'),
+        inheritCancel: document.getElementById('inheritCancel'),
+        inheritReassignBtn: document.getElementById('inheritReassignBtn'),
+        inheritDeleteAllBtn: document.getElementById('inheritDeleteAllBtn'),
       };
 
       let currentId = null; // id of the person currently focused on stage
@@ -830,7 +905,7 @@
         els.onboard.style.display = 'none';
         els.wrap.style.display = 'block';
         document.getElementById('pageTitle').textContent =
-          tree.nodes[tree.rootId].name + ' Family Tree';
+          'Dambudzo Family Tree';
         if (!currentId || !tree.nodes[currentId]) currentId = tree.rootId;
         render();
       }
@@ -927,6 +1002,21 @@
         return names.slice(0, max).join(', ') + ` +${names.length - max} more`;
       }
 
+      // returns { missingInB, missingInA } — node objects each parent has that the other doesn't
+      function computeChildDiff(parentId, op) {
+        const aChildren = new Set(tree.nodes[parentId].children);
+        const bChildren = new Set(tree.nodes[op].children);
+        const missingInB = [...aChildren]
+          .filter((c) => !bChildren.has(c))
+          .map((id) => tree.nodes[id])
+          .filter(Boolean);
+        const missingInA = [...bChildren]
+          .filter((c) => !aChildren.has(c))
+          .map((id) => tree.nodes[id])
+          .filter(Boolean);
+        return { missingInB, missingInA };
+      }
+
       // links parentId as a parent of childId, unless doing so would create a cycle
       function linkParentChildSafe(parentId, childId) {
         if (!tree.nodes[parentId] || !tree.nodes[childId]) return;
@@ -948,16 +1038,7 @@
           (id) => id !== parentId && tree.nodes[id],
         );
         others.forEach((op) => {
-          const aChildren = new Set(tree.nodes[parentId].children);
-          const bChildren = new Set(tree.nodes[op].children);
-          const missingInB = [...aChildren]
-            .filter((c) => !bChildren.has(c))
-            .map((id) => tree.nodes[id])
-            .filter(Boolean);
-          const missingInA = [...bChildren]
-            .filter((c) => !aChildren.has(c))
-            .map((id) => tree.nodes[id])
-            .filter(Boolean);
+          const { missingInB, missingInA } = computeChildDiff(parentId, op);
           if (missingInB.length || missingInA.length) {
             syncQueue.push({
               parentId,
@@ -987,7 +1068,7 @@
         }
         els.syncTitle.textContent = `${pA.name} and ${pOp.name} share a child`;
 
-        const lines = [`Both are now listed as parents of ${child.name}.`];
+        const lines = [`Both are listed as parents of ${child.name}.`];
         if (item.missingInB.length) {
           lines.push(
             `${pA.name} also has: ${listNames(item.missingInB)}. Add ${item.missingInB.length === 1 ? 'them' : 'these'} as ${pOp.name}'s child${item.missingInB.length === 1 ? '' : 'ren'} too?`,
@@ -1018,6 +1099,7 @@
           showSyncModal(syncQueue[0]);
         } else {
           modalOpen = false;
+          setStatus('synced');
         }
       }
 
@@ -1164,6 +1246,16 @@
           const card = document.createElement('div');
           card.className = 'card child-card';
           card.dataset.id = cid;
+
+          const del = document.createElement('button');
+          del.className = 'delete-btn';
+          del.innerHTML = '&times;';
+          del.title = 'Delete ' + child.name;
+          del.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openDeleteConfirm(cid);
+          });
+          card.appendChild(del);
 
           const name = document.createElement('div');
           name.className = 'name';
@@ -1418,6 +1510,170 @@
         if (!pendingDobNode) return;
         tree.nodes[pendingDobNode].dob = null;
         closeDobModal();
+        render();
+        setStatus('saving…');
+        await saveTree();
+      });
+
+      /* ---------------- delete a person ---------------- */
+
+      // fully removes nodeId from the tree, unlinking it from every
+      // parent and child it currently has
+      function deleteNodeCascade(nodeId) {
+        const node = tree.nodes[nodeId];
+        if (!node) return;
+        node.parents.forEach((pid) => {
+          if (tree.nodes[pid]) {
+            tree.nodes[pid].children = tree.nodes[pid].children.filter(
+              (c) => c !== nodeId,
+            );
+          }
+        });
+        node.children.forEach((cid) => {
+          if (tree.nodes[cid]) {
+            tree.nodes[cid].parents = tree.nodes[cid].parents.filter(
+              (p) => p !== nodeId,
+            );
+          }
+        });
+        delete tree.nodes[nodeId];
+        if (currentId === nodeId) currentId = tree.rootId;
+      }
+
+      // deletes nodeId and cascades down: a child is only deleted along
+      // with it if nodeId was that child's ONLY parent — if the child has
+      // another surviving parent, it's simply detached from nodeId instead
+      function deleteSubtreeRecursive(nodeId) {
+        const node = tree.nodes[nodeId];
+        if (!node) return;
+        const children = node.children.slice();
+        children.forEach((cid) => {
+          const child = tree.nodes[cid];
+          if (!child) return;
+          const remaining = child.parents.filter((p) => p !== nodeId);
+          if (remaining.length === 0) {
+            deleteSubtreeRecursive(cid);
+          }
+          // otherwise leave it — deleteNodeCascade below detaches the edge
+        });
+        deleteNodeCascade(nodeId);
+      }
+
+      function openDeleteConfirm(nodeId) {
+        if (nodeId === tree.rootId) {
+          setStatus("can't delete the root person");
+          setTimeout(() => setStatus('synced'), 2500);
+          return;
+        }
+        pendingDeleteId = nodeId;
+        modalOpen = true;
+        const node = tree.nodes[nodeId];
+        els.deleteTitle.textContent = `Delete ${node.name}?`;
+        els.deleteBody.textContent = `This removes ${node.name} from the tree. This can't be undone.`;
+        els.deleteOverlay.classList.add('open');
+      }
+
+      function closeDeleteConfirm() {
+        els.deleteOverlay.classList.remove('open');
+        modalOpen = false;
+        pendingDeleteId = null;
+      }
+
+      els.deleteCancel.addEventListener('click', closeDeleteConfirm);
+      els.deleteOverlay.addEventListener('click', (e) => {
+        if (e.target === els.deleteOverlay) closeDeleteConfirm();
+      });
+
+      els.deleteConfirmBtn.addEventListener('click', () => {
+        const nodeId = pendingDeleteId;
+        if (!nodeId || !tree.nodes[nodeId]) return;
+        const node = tree.nodes[nodeId];
+        els.deleteOverlay.classList.remove('open');
+        if (node.children.length === 0) {
+          finalizeSimpleDelete(nodeId);
+        } else {
+          openInheritModal(nodeId);
+        }
+      });
+
+      async function finalizeSimpleDelete(nodeId) {
+        deleteNodeCascade(nodeId);
+        pendingDeleteId = null;
+        modalOpen = false;
+        render();
+        setStatus('saving…');
+        await saveTree();
+      }
+
+      function openInheritModal(nodeId) {
+        pendingDeleteId = nodeId;
+        modalOpen = true;
+        const node = tree.nodes[nodeId];
+        const kids = node.children
+          .map((cid) => tree.nodes[cid])
+          .filter(Boolean);
+
+        els.inheritTitle.textContent = `${node.name} has ${
+          kids.length === 1 ? '1 child' : kids.length + ' children'
+        }`;
+        els.inheritBody.textContent = `Before removing ${node.name}, decide what happens to: ${listNames(kids, 6)}.`;
+
+        // candidates: everyone except this node and its own descendants (avoids cycles)
+        const excluded = new Set([
+          nodeId,
+          ...getAllDescendants(nodeId).map((n) => n.id),
+        ]);
+        const candidates = Object.values(tree.nodes)
+          .filter((n) => !excluded.has(n.id))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        els.inheritSelect.innerHTML =
+          '<option value="">— Choose someone to inherit them —</option>';
+        candidates.forEach((c) => {
+          const opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = c.dob
+            ? `${c.name} (b. ${formatDobYear(c.dob)})`
+            : c.name;
+          els.inheritSelect.appendChild(opt);
+        });
+
+        els.inheritReassignBtn.disabled = true;
+        els.inheritOverlay.classList.add('open');
+      }
+
+      function closeInheritModal() {
+        els.inheritOverlay.classList.remove('open');
+        modalOpen = false;
+        pendingDeleteId = null;
+      }
+
+      els.inheritCancel.addEventListener('click', closeInheritModal);
+      els.inheritOverlay.addEventListener('click', (e) => {
+        if (e.target === els.inheritOverlay) closeInheritModal();
+      });
+      els.inheritSelect.addEventListener('change', () => {
+        els.inheritReassignBtn.disabled = !els.inheritSelect.value;
+      });
+
+      els.inheritReassignBtn.addEventListener('click', async () => {
+        const nodeId = pendingDeleteId;
+        const targetId = els.inheritSelect.value;
+        if (!nodeId || !targetId || !tree.nodes[nodeId]) return;
+        const kids = tree.nodes[nodeId].children.slice();
+        kids.forEach((cid) => linkParentChildSafe(targetId, cid));
+        deleteNodeCascade(nodeId);
+        closeInheritModal();
+        render();
+        setStatus('saving…');
+        await saveTree();
+      });
+
+      els.inheritDeleteAllBtn.addEventListener('click', async () => {
+        const nodeId = pendingDeleteId;
+        if (!nodeId || !tree.nodes[nodeId]) return;
+        deleteSubtreeRecursive(nodeId);
+        closeInheritModal();
         render();
         setStatus('saving…');
         await saveTree();
